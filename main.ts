@@ -28,7 +28,9 @@ function parseFile(text: string): FileState {
   const br: '\n' | '\r\n' = firstLf > 0 && text[firstLf - 1] === '\r' ? '\r\n' : '\n';
   const end = text.endsWith(br);
   const body = end ? text.slice(0, -br.length) : text;
-  const lines = body === '' ? [] : body.split(br);
+  // A file that is exactly one line break holds one empty line; only the
+  // empty text holds no lines.
+  const lines = body === '' ? (end ? [''] : []) : body.split(br);
   return { lines, br, end };
 }
 
@@ -400,6 +402,7 @@ function parseUniSection(lines: string[], start: number): { apply: Applier; next
   let newPath: string | null = null;
   let create = false;
   let del = false;
+  let hasDiffPair = false;
   let i = start;
   // diff --git start: parse a/<X> b/<Y>.
   if (lines[i].startsWith('diff --git ')) {
@@ -420,6 +423,7 @@ function parseUniSection(lines: string[], start: number): { apply: Applier; next
       if (i + 1 >= lines.length || !lines[i + 1].startsWith('+++ ')) throw new ParseFault(i + 2);
       oldPath = parseDiffPath(l);
       newPath = parseDiffPath(lines[i + 1]);
+      hasDiffPair = true;
       i += 2;
       continue;
     }
@@ -429,12 +433,13 @@ function parseUniSection(lines: string[], start: number): { apply: Applier; next
       continue;
     }
     if (l.startsWith('rename from ')) {
-      oldPath = l.slice('rename from '.length).trim();
+      // Rename lines name the paths only when no ---/+++ pair does.
+      if (!hasDiffPair) oldPath = l.slice('rename from '.length).trim();
       i++;
       continue;
     }
     if (l.startsWith('rename to ')) {
-      newPath = l.slice('rename to '.length).trim();
+      if (!hasDiffPair) newPath = l.slice('rename to '.length).trim();
       i++;
       continue;
     }
@@ -544,7 +549,8 @@ function hunkPlusLines(h: UniHunk): string[] {
 /** Apply one unified hunk to a file's lines. Returns the new file or a failure code. */
 function applyUniHunk(f: FileState, h: UniHunk, d: number, strict: boolean): { file: FileState } | { code: string } {
   if (h.o.length === 0) {
-    const at = Math.min(h.a + d, f.lines.length);
+    // After the first A + d lines; a negative position is the top of the file.
+    const at = Math.max(0, Math.min(h.a + d, f.lines.length));
     const ins = insertLines(f, at, h.n);
     const atEnd = at >= f.lines.length;
     const end = atEnd ? !h.noNlAfterN : f.end;
@@ -743,6 +749,9 @@ function parseV4aChunks(lines: string[], start: number, last: number): { list: V
     }
     if (l.startsWith('*** ')) break;
     if (l.startsWith(' ') || l.startsWith('-') || l.startsWith('+')) {
+      // A chunk starts at an @@ line, or, for the first chunk, at a body line:
+      // a body line after a chunk has ended is not a chunk start.
+      if (cur === null && list.length > 0) throw new ParseFault(i + 1);
       if (cur === null) cur = { anchor: null, o: [], n: [], nToO: [], endOfFile: false };
       if (l.startsWith(' ')) {
         const text = l.slice(1);
